@@ -1,0 +1,229 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import LeftPanel from '../components/Layout/LeftPanel';
+import CenterPanel from '../components/Layout/CenterPanel';
+import RightPanel from '../components/Layout/RightPanel';
+import BottomPanel from '../components/Layout/BottomPanel';
+import WebcamFeed from '../components/GesturePanel/WebcamFeed';
+import GestureDisplay from '../components/GesturePanel/GestureDisplay';
+import ConfidenceMeter from '../components/GesturePanel/ConfidenceMeter';
+import Sidebar from '../components/ComponentLibrary/Sidebar';
+import GestureCanvas from '../components/PageBuilder/GestureCanvas';
+import CodeViewer from '../components/CodePanel/CodeViewer';
+import CopyButton from '../components/CodePanel/CopyButton';
+import PreviewRenderer from '../builder/PreviewRenderer';
+import ComponentGenerator from '../builder/ComponentGenerator';
+import LayoutBuilder from '../builder/LayoutBuilder';
+import useCodeGeneration from '../hooks/useCodeGeneration';
+import useGestureDrag from '../hooks/useGestureDrag';
+import { getGestureAction } from '../gestures/GestureMappings';
+
+const Builder = () => {
+  const [layout, setLayout] = useState([]);
+  const [gesture, setGesture] = useState({ gesture: 'none', confidence: 0 });
+  const [selectedComponent, setSelectedComponent] = useState(null);
+  const [landmarks, setLandmarks] = useState(null);
+  const [fingerPosition, setFingerPosition] = useState(null);
+  const canvasRef = useRef(null);
+  const { code, generateCode } = useCodeGeneration(layout);
+  const {
+    isDragging,
+    draggedComponentId,
+    handPosition,
+    startGestureDrag,
+    updateHandPosition,
+    endGestureDrag,
+    getDeltaPosition
+  } = useGestureDrag();
+
+  // Auto-generate code when layout changes
+  useEffect(() => {
+    generateCode();
+  }, [layout, generateCode]);
+
+  // Handle gesture actions
+  useEffect(() => {
+    console.log('Gesture received:', gesture);
+    const action = getGestureAction(gesture.gesture);
+    console.log('Action determined:', action);
+
+    switch(action.action) {
+      case 'ENABLE_DRAG':
+        if (gesture.confidence > 0.7 && landmarks && fingerPosition && canvasRef.current) {
+          // Find which component is under the finger
+          const canvasRect = canvasRef.current.getBoundingClientRect();
+          if (fingerPosition.x >= canvasRect.left && fingerPosition.x <= canvasRect.right &&
+              fingerPosition.y >= canvasRect.top && fingerPosition.y <= canvasRect.bottom) {
+            const relativeY = fingerPosition.y - canvasRect.top;
+            const itemHeight = canvasRect.height / (layout.length || 1);
+            const componentIndex = Math.floor(relativeY / itemHeight);
+            if (componentIndex >= 0 && componentIndex < layout.length) {
+              console.log('Selecting component for drag:', componentIndex);
+              handleGestureDragStart(componentIndex, { x: fingerPosition.x, y: fingerPosition.y });
+            }
+          }
+        }
+        break;
+      
+      case 'DELETE_COMPONENT':
+        if (gesture.confidence > 0.8 && draggedComponentId !== null) {
+          handleRemoveComponent(draggedComponentId);
+          endGestureDrag();
+        }
+        break;
+      
+      case 'SELECT_COMPONENT':
+        // Handled via UI interaction
+        break;
+      
+      case 'CONFIRM_ADD':
+        if (gesture.confidence > 0.8) {
+          handleAddComponent();
+        }
+        break;
+      
+      default:
+        break;
+    }
+  }, [gesture, landmarks, fingerPosition, layout.length]);
+
+  const handleComponentSelect = (component) => {
+    setSelectedComponent(component);
+  };
+
+  const handleAddComponent = () => {
+    if (selectedComponent) {
+      const newLayout = LayoutBuilder.addComponent(layout, {
+        type: selectedComponent.type
+      });
+      setLayout(newLayout);
+      setSelectedComponent(null);
+    }
+  };
+
+  const handleRemoveComponent = (index) => {
+    const newLayout = LayoutBuilder.removeComponent(layout, index);
+    setLayout(newLayout);
+  };
+
+  const handleClearLayout = () => {
+    setLayout([]);
+  };
+
+  const handleGestureDragStart = useCallback((componentIndex, startPoint) => {
+    startGestureDrag(componentIndex, startPoint);
+  }, [startGestureDrag]);
+
+  const handleGestureDragEnd = useCallback(() => {
+    endGestureDrag();
+  }, [endGestureDrag]);
+
+  const handleLayoutChange = (newLayout) => {
+    setLayout(newLayout);
+  };
+
+  return (
+    <div className="flex h-full gap-2 p-2 bg-gray-100">
+      {/* LEFT PANEL - Gesture Control */}
+      <LeftPanel>
+        <div className="space-y-4">
+          <h2 className="font-bold text-lg">🖐️ Gesture Control</h2>
+          <WebcamFeed 
+            onFrameCapture={(landmarksData) => {
+              setLandmarks(landmarksData);
+              if (gesture.gesture === 'one_finger' && isDragging) {
+                updateHandPosition(landmarksData);
+              }
+            }} 
+            isRunning={true}
+            setGesture={setGesture}
+            onFingerPosition={setFingerPosition}
+          />
+
+          {/* Gesture Status Display */}
+          <div className="mt-4 p-3 bg-white rounded-lg border">
+            <h3 className="font-semibold text-sm mb-2">🎯 Current Gesture</h3>
+            <div className="space-y-1 text-sm">
+              <p><span className="font-medium">Gesture:</span> <span className={`font-mono ${gesture.gesture === 'one_finger' ? 'text-blue-600' : gesture.gesture === 'open_palm' ? 'text-green-600' : 'text-gray-600'}`}>{gesture.gesture || 'none'}</span></p>
+              <p><span className="font-medium">Confidence:</span> <span className="font-mono text-green-600">{gesture.confidence ? (gesture.confidence * 100).toFixed(1) + '%' : '0%'}</span></p>
+              <p><span className="font-medium">Action:</span> <span className="font-mono text-purple-600">{getGestureAction(gesture.gesture).action}</span></p>
+            </div>
+          </div>
+          <GestureDisplay
+            detectedGesture={gesture.gesture}
+            confidence={gesture.confidence}
+          />
+          <ConfidenceMeter confidence={gesture.confidence} />
+          
+          {/* Gesture Status */}
+          {isDragging && (
+            <div className="p-2 bg-blue-100 border border-blue-300 rounded text-sm">
+              <p className="font-semibold text-blue-700">👆 Drag Mode Active</p>
+              <p className="text-xs text-blue-600 mt-1">Point with index finger to drag components</p>
+            </div>
+          )}
+          
+          <button
+            onClick={handleAddComponent}
+            disabled={!selectedComponent}
+            className="w-full bg-green-500 text-white py-2 rounded hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            👍 Add Component
+          </button>
+        </div>
+      </LeftPanel>
+
+      {/* CENTER PANEL - Component Preview & Canvas */}
+      <CenterPanel>
+        <div className="space-y-4 h-full flex flex-col">
+          <h2 className="font-bold text-lg">🎨 Canvas Preview</h2>
+          <div className="flex-1 overflow-auto bg-white rounded border p-2">
+            <GestureCanvas
+              ref={canvasRef}
+              layout={layout}
+              gesture={gesture}
+              landmarks={landmarks}
+              isDragging={isDragging}
+              draggedComponentId={draggedComponentId}
+              handPosition={handPosition}
+              fingerPosition={fingerPosition}
+              onLayoutChange={handleLayoutChange}
+              onGestureDragStart={handleGestureDragStart}
+              onGestureDragEnd={handleGestureDragEnd}
+            />
+          </div>
+        </div>
+      </CenterPanel>
+
+      {/* RIGHT PANEL - Code & Components */}
+      <RightPanel>
+        <div className="space-y-4 h-full flex flex-col">
+          <h2 className="font-bold text-lg">📦 Components</h2>
+          <div className="flex-1 overflow-auto">
+            <Sidebar onComponentSelect={handleComponentSelect} selectedComponent={selectedComponent} />
+          </div>
+        </div>
+      </RightPanel>
+
+      {/* BOTTOM PANEL - Code & Canvas */}
+      <BottomPanel>
+        <div className="space-y-2">
+          <div className="flex justify-between items-center">
+            <h3 className="font-bold">📝 Generated React Code</h3>
+            <div className="space-x-2">
+              <CopyButton code={code} />
+              <button
+                onClick={handleClearLayout}
+                className="px-3 py-1 text-sm bg-red-500 text-white rounded hover:bg-red-600"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <CodeViewer code={code} />
+        </div>
+      </BottomPanel>
+    </div>
+  );
+};
+
+export default Builder;
